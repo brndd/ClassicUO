@@ -162,12 +162,21 @@ namespace ClassicUO.Game.Managers
 
         public void RequestServerPartyGuildInfo(bool force = false)
         {
+            if (_lastPacketRecv == default)
+            {
+                _lastPacketRecv = Time.Ticks;
+            }
+            else if (_lastPacketRecv + 10000 < Time.Ticks)
+            {
+                Enabled = false;
+            }
+
             if (!force && !Enabled)
                 return;
 
             if (World.InGame && _lastPacketSend < Time.Ticks)
             {
-                _lastPacketSend = Time.Ticks + (uint) (_lastPacketRecv < Time.Ticks ? 2000 : 250);
+                _lastPacketSend = Time.Ticks + (uint) (_lastPacketRecv <= Time.Ticks ? 4000 : 250);
 
                 NetClient.Socket.Send(new PQueryGuildPosition());
 
