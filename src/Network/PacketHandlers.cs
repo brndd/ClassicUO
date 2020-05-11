@@ -185,6 +185,8 @@ namespace ClassicUO.Network
             Handlers.Add(0xDF, BuffDebuff);
             Handlers.Add(0xE2, NewCharacterAnimation);
             Handlers.Add(0xE3, KREncryptionResponse);
+            Handlers.Add(0xE5, DisplayWaypoint);
+            Handlers.Add(0xE6, RemoveWaypoint);
             Handlers.Add(0xF0, KrriosClientSpecial);
             Handlers.Add(0xF1, FreeshardListR);
             Handlers.Add(0xF3, UpdateItemSA);
@@ -1011,6 +1013,13 @@ namespace ClassicUO.Network
                         while (first?.Next != null)
                         {
                             first = first.Next;
+                        }
+                    }
+                    else
+                    {
+                        while (first?.Previous != null)
+                        {
+                            first = first.Previous;
                         }
                     }
 
@@ -2043,25 +2052,21 @@ namespace ClassicUO.Network
                     it.Price = p.ReadUInt();
                     byte nameLen = p.ReadByte();
                     string name = p.ReadASCII(nameLen);
-                    bool fromcliloc = false;
 
-                    if (int.TryParse(name, out int cliloc))
+                    if (World.OPL.TryGetNameAndData(it.Serial, out string s, out _))
                     {
-                        it.Name = ClilocLoader.Instance.GetString(cliloc);
-                        fromcliloc = true;
+                        it.Name = s;
+                    }
+                    else if (int.TryParse(name, out int cliloc))
+                    {
+                        it.Name = ClilocLoader.Instance.Translate(cliloc, $"\t{it.ItemData.Name}: \t{it.Amount}", true);
                     }
                     else if (string.IsNullOrEmpty(name))
                     {
-                        bool success = World.OPL.TryGetNameAndData(it.Serial, out it.Name, out _);
-                        if (!success)
-                        {
-                            it.Name = it.ItemData.Name;
-                        }
+                        it.Name = it.ItemData.Name;
                     }
-                    if (string.IsNullOrEmpty(it.Name))
+                    else
                         it.Name = name;
-
-                    gump.SetIfNameIsFromCliloc(it, fromcliloc);
 
                     if (reverse)
                     {
@@ -2224,12 +2229,12 @@ namespace ClassicUO.Network
                     item_hue = p.ReadUShort();
                 }
 
-                if (Client.Version >= Data.ClientVersion.CV_70331)
-                    itemGraphic &= 0xFFFF;
-                else if (Client.Version >= Data.ClientVersion.CV_7090)
-                    itemGraphic &= 0x7FFF;
-                else
-                    itemGraphic &= 0x3FFF;
+                //if (Client.Version >= Data.ClientVersion.CV_70331)
+                //    itemGraphic &= 0xFFFF;
+                //else if (Client.Version >= Data.ClientVersion.CV_7090)
+                //    itemGraphic &= 0x7FFF;
+                //else
+                //    itemGraphic &= 0x3FFF;
 
                 //if (layer > 0x1D)
                 //{
@@ -2873,7 +2878,7 @@ namespace ClassicUO.Network
 
             Mobile owner = World.Mobiles.Get(serial);
 
-            if (owner == null)
+            if (owner == null || serial == World.Player)
                 return;
 
             serial |= 0x80000000;
@@ -3247,7 +3252,7 @@ namespace ClassicUO.Network
 
                     if (cliloc > 0)
                     {
-                        str = ClilocLoader.Instance.Translate(ClilocLoader.Instance.GetString((int) cliloc), capitalize: true);
+                        str = ClilocLoader.Instance.GetString((int) cliloc, true);
 
                         if (!string.IsNullOrEmpty(str))
                             item.Name = str;
@@ -4215,6 +4220,24 @@ namespace ClassicUO.Network
         {
         }
 
+        private static void DisplayWaypoint(Packet p)
+        {
+            uint serial = p.ReadUInt();
+            ushort x = p.ReadUShort();
+            ushort y = p.ReadUShort();
+            sbyte z = p.ReadSByte();
+            byte map = p.ReadByte();
+            WaypointsType type = (WaypointsType) p.ReadUShort();
+            bool ignoreobject = p.ReadUShort() != 0;
+            uint cliloc = p.ReadUInt();
+            string name = p.ReadUnicodeReversed();
+        }
+
+        private static void RemoveWaypoint(Packet p)
+        {
+            uint serial = p.ReadUInt();
+        }
+
         private static void KrriosClientSpecial(Packet p)
         {
             byte type = p.ReadByte();
@@ -4344,11 +4367,41 @@ namespace ClassicUO.Network
             //    }
             //}
 
-            BoatMovingManager.AddStep(serial, 
-                                      boatSpeed, 
-                                      movingDirection, 
-                                      facingDirection, 
-                                      x, y, (sbyte) z);
+            bool smooth = ProfileManager.Current != null && ProfileManager.Current.UseSmoothBoatMovement;
+
+            if (smooth)
+                BoatMovingManager.AddStep(serial, 
+                                          boatSpeed, 
+                                          movingDirection, 
+                                          facingDirection, 
+                                          x, y, (sbyte) z);
+            else
+            {
+
+                //UpdateGameObject(serial, 
+                //                 multi.Graphic, 
+                //                 0,
+                //                 multi.Amount, 
+                //                 x, 
+                //                 y, 
+                //                 (sbyte) z,
+                //                 facingDirection,
+                //                 multi.Hue, 
+                //                 multi.Flags, 
+                //                 0, 
+                //                 2, 
+                //                 1);
+                multi.X = x;
+                multi.Y = y;
+                multi.Z = (sbyte) z;
+                multi.AddToTile();
+                multi.UpdateScreenPosition();
+                if (World.HouseManager.TryGetHouse(serial, out var house))
+                {
+                    house.Generate(true, true, true);
+                }
+            }
+
 
             int count = p.ReadUShort();
 
@@ -4385,12 +4438,46 @@ namespace ClassicUO.Network
                 //ent.LastX = cx;
                 //ent.LastY = cy;
 
-                BoatMovingManager.PushItemToList(
-                serial,
-                cSerial, 
-                x - cx, 
-                y - cy,
-                (sbyte) (z - cz));
+                if (smooth)
+                    BoatMovingManager.PushItemToList(
+                    serial,
+                    cSerial, 
+                    x - cx, 
+                    y - cy,
+                    (sbyte) (z - cz));
+                else
+                {
+                    if (cSerial == World.Player)
+                    {
+                        UpdatePlayer(cSerial, 
+                                     ent.Graphic,
+                                     0, 
+                                     ent.Hue,
+                                     ent.Flags, 
+                                     cx, 
+                                     cy,
+                                     (sbyte) cz,
+                                     0, 
+                                     World.Player.Direction);
+                    }
+                    else
+                    {
+                        UpdateGameObject(cSerial,
+                                         ent.Graphic,
+                                         0,
+                                         0,
+                                         cx,
+                                         cy,
+                                         (sbyte) cz,
+                                         SerialHelper.IsMobile(ent) ?
+                                             ((Mobile) ent).Direction : 0,
+                                         ent.Hue,
+                                         ent.Flags,
+                                         0,
+                                         0,
+                                         1);
+                    }
+                }
             }
         }
 
@@ -4601,9 +4688,7 @@ namespace ClassicUO.Network
 
                     if (SerialHelper.IsValid(item.Container))
                     {
-                        Console.WriteLine("======= UpdateObject function: item: {0:X8}, container: {1:X8}", item.Serial, item.Container);
-                        //RemoveItemFromContainer(item);
-                        //item.Container = 0xFFFF_FFFF;
+                        RemoveItemFromContainer(item);
                     }
                 }
                 else if (SerialHelper.IsMobile(serial))
@@ -4828,7 +4913,7 @@ namespace ClassicUO.Network
 
                 obj.Next = null;
                 obj.Previous = null;
-                obj.Container = 0xFFFF_FFFF;
+                obj.Container = 0;
             }
 
             obj.RemoveFromTile();
